@@ -1,84 +1,71 @@
-# Vagrantfile API/syntax version. Don't touch unless you know what you're doing!
-VAGRANTFILE_API_VERSION = "2"
-
-# Temporary workaround to Python bug in macOS High Sierra which can break Ansible
-# https://github.com/ansible/ansible/issues/34056#issuecomment-352862252
-# https://github.com/ansible/ansible/issues/32499#issuecomment-401191857
-ENV["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
+# Both boxes must be imported before running the demo; see docs/boxes.md.
+if RUBY_PLATFORM.include?("darwin")
+  ENV["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] ||= "YES"
+  ENV["no_proxy"] ||= "*"
+end
 
 Vagrant.configure("2") do |config|
-  config.vm.provision "shell", inline: "echo Hello"
+  # SSH/WinRM uploads need no shared folder support.
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+  config.vm.box_check_update = false
 
-  # LINUX MACHINE
-  # ---------------------------------------------------------------------------------
-
-  # To specify a default machine, just mark it primary when defining it. 
-  # Only one primary machine may be specified.
   config.vm.define "linux", primary: true do |linux|
-    linux.vm.box = "centos/7"
-    linux.vm.provision "ansible" do |ansible|
-      ansible.compatibility_mode = "auto"
-      ansible.verbose = "v"
-      ansible.playbook = "test.yml"
-      #ansible.galaxy_roles_path = "../../"
-      ansible.extra_vars = {
-       mytestvar: true
-      }
-    end
-  end
-
-  # WINDOWS MACHINE
-  # ---------------------------------------------------------------------------------
-
-  # http://www.hurryupandwait.io/blog/in-search-of-a-light-weight-windows-vagrant-box
-  # http://www.hurryupandwait.io/blog/creating-windows-base-images-for-virtualbox-and-hyper-v-using-packer-boxstarter-and-vagrant
- 
-  config.vm.define "windows" do |windows|
-
-    # More examples https://github.com/jborean93/ansible-windows
-    windows.vm.box = "jborean93/WindowsServer2016"
-    windows.vm.communicator = :winrm
-    windows.vm.guest = :windows
-    windows.vm.boot_timeout = 400
-    windows.winrm.username = "vagrant"
-    windows.winrm.password = "vagrant"
-
-    # RDP uses port 3389
-    # MacOS: Install Remote Desktop to handle rdp protocol (https://brewinstall.org/Install-rdesktop-on-Mac-with-Brew/)
-    #windows.vm.network :forwarded_port, guest: 3389, host: 3389, id: "msrdp", auto_correct: true
-    #windows.vm.network :forwarded_port, guest: 5985, host: 5985, id: "winrm", auto_correct: true
-    #windows.vm.network :forwarded_port, guest: 5986, host: 5986, id: "winrm", auto_correct: true
-    windows.vm.provider "virtualbox" do |vb|
-      vb.gui = false
+    linux.vm.box = ENV.fetch("RHEL_BOX", "demo/rhel10")
+    linux.vm.hostname = "rhel-demo"
+    linux.vm.network "forwarded_port", guest: 22, host: 2222,
+                     host_ip: "127.0.0.1", id: "ssh", auto_correct: true
+    linux.vm.network "forwarded_port", guest: 80,
+                     host: Integer(ENV.fetch("RHEL_HTTP_PORT", "8080")),
+                     host_ip: "127.0.0.1", id: "http"
+    linux.vm.provider "virtualbox" do |vb|
       vb.memory = 2048
       vb.cpus = 2
     end
-
-    # Provision using Powershell
-    windows.vm.provision "shell", path: "provision.ps1"
-    # Provision using Ansible
-    windows.vm.provision "ansible" do |ansible|
-      ansible.compatibility_mode = "auto"
-      ansible.verbose = "vvv"
-      ansible.playbook = "test.yml"
-      #ansible.become = "true"
-      #ansible.galaxy_roles_path = "../../"
-      #ansible.inventory = "inventory"
-      ansible.extra_vars = {
-        ansible_connection: "winrm",
-        ansible_winrm_transport: "ntlm",
-
-        # http - https://docs.ansible.com/ansible/latest/user_guide/windows_winrm.html
-        ansible_port: 55985,
-        ansible_winrm_scheme: "http"
-
-        # https - https://docs.ansible.com/ansible/latest/user_guide/windows_winrm.html
-        #ansible_port: 55986,
-        #ansible_winrm_server_cert_validation: "ignore",
-        #ansible_winrm_scheme: "https"
-      }
-    end
-
   end
 
+  config.vm.define "windows" do |windows|
+    windows.vm.box = ENV.fetch("WINDOWS_BOX", "demo/windows2022")
+    windows.vm.hostname = "win-demo"
+    windows.vm.guest = :windows
+    windows.vm.communicator = :winrm
+    windows.vm.boot_timeout = 1200
+    windows.winrm.username = ENV.fetch("WINDOWS_USER", "vagrant")
+    windows.winrm.password = ENV.fetch("WINDOWS_PASSWORD", "vagrant")
+    windows.winrm.transport = :negotiate
+    windows.winrm.guest_port = 5985
+    windows.vm.network "forwarded_port", guest: 5985, host: 55985,
+                       host_ip: "127.0.0.1", id: "winrm", auto_correct: true
+    # Override common box defaults so management ports stay on loopback.
+    windows.vm.network "forwarded_port", guest: 5986, host: 55986,
+                       host_ip: "127.0.0.1", id: "winrm-ssl", disabled: true
+    windows.vm.network "forwarded_port", guest: 3389, host: 53389,
+                       host_ip: "127.0.0.1", id: "rdp", disabled: true
+    windows.vm.network "forwarded_port", guest: 22, host: 2223,
+                       host_ip: "127.0.0.1", id: "ssh", disabled: true
+    windows.vm.network "forwarded_port", guest: 80,
+                       host: Integer(ENV.fetch("WINDOWS_HTTP_PORT", "8081")),
+                       host_ip: "127.0.0.1", id: "http"
+    windows.vm.provider "virtualbox" do |vb|
+      vb.memory = 4096
+      vb.cpus = 2
+      vb.gui = false
+    end
+    # Diagnostic only: WinRM must already work in the base box.
+    windows.vm.provision "shell", path: "provision.ps1"
+  end
+
+  # Vagrant limits each invocation to the machine being provisioned and generates
+  # the real SSH key, credentials, and forwarded ports, including corrected ports.
+  config.vm.provision "ansible" do |ansible|
+    ansible.playbook = "test.yml"
+    ansible.compatibility_mode = "2.0"
+    ansible.host_vars = {
+      "linux" => { "ansible_python_interpreter" => "/usr/bin/python3" },
+      "windows" => {
+        "ansible_winrm_transport" => "ntlm",
+        "ansible_winrm_scheme" => "http",
+        "ansible_winrm_message_encryption" => "always"
+      }
+    }
+  end
 end

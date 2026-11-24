@@ -1,4 +1,7 @@
 .vscode
 .vagrant
 *.pyc
-
+.ansible
+.venv/
+.DS_Store
+*.box

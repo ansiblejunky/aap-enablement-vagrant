@@ -1,21 +1,122 @@
 ---
-- hosts: windows
-  connection: local
+- name: Configure an Apache demo on RHEL
+  hosts: linux
+  become: true
   gather_facts: true
 
-  tasks:
-  - win_ping:
-
-  - debug:
-      msg: "Connected to windows server"
-
-
-- hosts: linux
-  connection: local
-  gather_facts: false
+  pre_tasks:
+    - name: Require real RHEL 10
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'RedHat'
+          - ansible_facts['distribution_major_version'] == '10'
+        fail_msg: Import a RHEL 10 box as described in docs/boxes.md.
 
   tasks:
-  - ping:
-    
-  - debug:
-      msg: "Connected to linux server"
+    - name: Test SSH and Python connectivity
+      ansible.builtin.ping:
+
+    - name: Install Apache and the firewall
+      ansible.builtin.dnf:
+        name:
+          - httpd
+          - firewalld
+          - python3-firewall
+        state: present
+
+    - name: Publish the demo page
+      ansible.builtin.template:
+        src: templates/index.html.j2
+        dest: /var/www/html/index.html
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Enable and start the firewall
+      ansible.builtin.service:
+        name: firewalld
+        enabled: true
+        state: started
+
+    - name: Allow HTTP through the guest firewall
+      ansible.posix.firewalld:
+        service: http
+        permanent: true
+        immediate: true
+        state: enabled
+
+    - name: Enable and start Apache
+      ansible.builtin.service:
+        name: httpd
+        enabled: true
+        state: started
+
+    - name: Verify Apache serves the managed page
+      ansible.builtin.uri:
+        url: http://127.0.0.1/
+        return_content: true
+      register: linux_page
+      until: "'Provisioned by Ansible on linux' in linux_page.content"
+      retries: 10
+      delay: 3
+      changed_when: false
+
+- name: Configure an IIS demo on Windows Server
+  hosts: windows
+  gather_facts: true
+
+  pre_tasks:
+    - name: Require Windows Server 2022 or later
+      ansible.builtin.assert:
+        that:
+          - "'Server' in ansible_facts['os_name']"
+          - ansible_facts['distribution_version'] is version('10.0.20348', '>=')
+        fail_msg: Import a Windows Server 2022 or newer box.
+
+  tasks:
+    - name: Test WinRM and PowerShell connectivity
+      ansible.windows.win_ping:
+
+    - name: Install IIS and its default document feature
+      ansible.windows.win_feature:
+        name:
+          - Web-Server
+          - Web-Default-Doc
+          - Web-Static-Content
+        state: present
+      register: iis_feature
+
+    - name: Reboot if IIS installation requires it
+      ansible.windows.win_reboot:
+      when: iis_feature.reboot_required
+
+    - name: Publish the demo page
+      ansible.windows.win_template:
+        src: templates/index.html.j2
+        dest: C:\inetpub\wwwroot\index.html
+
+    - name: Allow HTTP through the guest firewall
+      community.windows.win_firewall_rule:
+        name: Ansible demo HTTP
+        localport: '80'
+        protocol: tcp
+        direction: in
+        action: allow
+        enabled: true
+        state: present
+
+    - name: Enable and start IIS
+      ansible.windows.win_service:
+        name: W3SVC
+        start_mode: auto
+        state: started
+
+    - name: Verify IIS serves the managed page
+      ansible.windows.win_uri:
+        url: http://127.0.0.1/index.html
+        return_content: true
+      register: windows_page
+      until: "'Provisioned by Ansible on windows' in windows_page.content"
+      retries: 10
+      delay: 3
+      changed_when: false

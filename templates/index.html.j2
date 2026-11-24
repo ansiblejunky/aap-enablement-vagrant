@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Vagrant and Ansible demo</title>
+  </head>
+  <body>
+    <h1>{{ demo_message | default('Vagrant + Ansible demo') | e }}</h1>
+    <p>Provisioned by Ansible on {{ inventory_hostname | e }}</p>
+    <p>Operating system: {{ ansible_facts['distribution'] | e }} {{ ansible_facts['distribution_version'] | e }}</p>
+    <p>Change demo_message and run provisioning again to demonstrate desired state.</p>
+  </body>
+</html>
